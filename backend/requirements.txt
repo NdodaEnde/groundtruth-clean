@@ -1,0 +1,28 @@
+# GroundTruth Backend Requirements
+# Stripped from GP Practice Management - removed medical/MongoDB features
+
+# Core FastAPI stack
+fastapi
+uvicorn[standard]
+pydantic
+python-multipart
+
+# Document processing - LandingAI ADE library
+landingai-ade
+
+# File processing and utilities
+python-dotenv
+
+# Development (optional)
+pytest
+
+# === Phase 2: RAG with Vector Database ===
+# Vector database
+chromadb>=0.4.22
+
+# Embeddings (choose one or both)
+sentence-transformers>=2.2.0  # Local embeddings (free)
+openai>=1.0.0                 # OpenAI embeddings (paid, higher quality)
+
+# LLM for Q&A
+anthropic>=0.18.0             # Claude API for answer generation

@@ -1,0 +1,35 @@
+{
+  "01fd2efe-8864-4b94-bf82-e032925272c4": {
+    "doc_id": "01fd2efe-8864-4b94-bf82-e032925272c4",
+    "filename": "1pager cof.pdf",
+    "upload_time": "2025-12-26T09:45:12.417775",
+    "status": "parsed",
+    "num_chunks": 9,
+    "file_path": "/Users/luzuko/groundtruth-clean/backend/outputs/01fd2efe-8864-4b94-bf82-e032925272c4/01fd2efe-8864-4b94-bf82-e032925272c4.pdf",
+    "metadata_path": "/Users/luzuko/groundtruth-clean/backend/outputs/01fd2efe-8864-4b94-bf82-e032925272c4/metadata.json",
+    "indexed": true,
+    "indexed_chunks": 9
+  },
+  "36302eda-2f6e-4966-9484-6364cfc11722": {
+    "doc_id": "36302eda-2f6e-4966-9484-6364cfc11722",
+    "filename": "ID Doc.pdf",
+    "upload_time": "2025-12-27T10:32:44.754706",
+    "status": "parsed",
+    "num_chunks": 3,
+    "file_path": "/Users/luzuko/groundtruth-clean/backend/outputs/36302eda-2f6e-4966-9484-6364cfc11722/36302eda-2f6e-4966-9484-6364cfc11722.pdf",
+    "metadata_path": "/Users/luzuko/groundtruth-clean/backend/outputs/36302eda-2f6e-4966-9484-6364cfc11722/metadata.json",
+    "indexed": true,
+    "indexed_chunks": 3
+  },
+  "a292f044-3c7f-4b57-9c5b-fc716eaf689e": {
+    "doc_id": "a292f044-3c7f-4b57-9c5b-fc716eaf689e",
+    "filename": "01 September 2022_form_001.pdf",
+    "upload_time": "2026-01-12T08:33:44.555528",
+    "status": "parsed",
+    "num_chunks": 5,
+    "file_path": "/Users/luzuko/groundtruth-clean/backend/outputs/a292f044-3c7f-4b57-9c5b-fc716eaf689e/a292f044-3c7f-4b57-9c5b-fc716eaf689e.pdf",
+    "metadata_path": "/Users/luzuko/groundtruth-clean/backend/outputs/a292f044-3c7f-4b57-9c5b-fc716eaf689e/metadata.json",
+    "indexed": true,
+    "indexed_chunks": 5
+  }
+}
