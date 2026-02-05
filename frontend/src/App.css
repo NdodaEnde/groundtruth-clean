@@ -458,8 +458,37 @@ body {
   font-size: 14px;
   line-height: 1.6;
   color: #374151;
+}
+
+/* Allow tables to expand fully */
+.chunk-card.expanded .chunk-content {
+  max-height: none;
+}
+
+/* Default collapsed state for non-table content */
+.chunk-content.truncated {
   max-height: 200px;
   overflow: hidden;
+  position: relative;
+}
+
+.chunk-content.truncated::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background: linear-gradient(transparent, white);
+  pointer-events: none;
+}
+
+.chunk-card.selected .chunk-content.truncated::after {
+  background: linear-gradient(transparent, #fef9c3);
+}
+
+.chunk-card.hovered .chunk-content.truncated::after {
+  background: linear-gradient(transparent, #eff6ff);
 }
 
 /* Welcome Screen */
@@ -572,3 +601,42 @@ body {
   line-height: 1.5;
 }
 
+/* Tab Header */
+.tab-header {
+  display: flex;
+  border-bottom: 2px solid #e5e7eb;
+  background: #f9fafb;
+}
+
+.tab-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 16px;
+  background: transparent;
+  border: none;
+  font-size: 14px;
+  font-weight: 600;
+  color: #6b7280;
+  cursor: pointer;
+  transition: all 0.2s;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -2px;
+}
+
+.tab-btn:hover {
+  color: #374151;
+  background: #f3f4f6;
+}
+
+.tab-btn.active {
+  color: #667eea;
+  border-bottom-color: #667eea;
+  background: white;
+}
+
+.tab-btn svg {
+  flex-shrink: 0;
+}

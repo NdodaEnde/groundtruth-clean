@@ -25,11 +25,71 @@
     "doc_id": "a292f044-3c7f-4b57-9c5b-fc716eaf689e",
     "filename": "01 September 2022_form_001.pdf",
     "upload_time": "2026-01-12T08:33:44.555528",
-    "status": "parsed",
+    "status": "extracted",
     "num_chunks": 5,
     "file_path": "/Users/luzuko/groundtruth-clean/backend/outputs/a292f044-3c7f-4b57-9c5b-fc716eaf689e/a292f044-3c7f-4b57-9c5b-fc716eaf689e.pdf",
     "metadata_path": "/Users/luzuko/groundtruth-clean/backend/outputs/a292f044-3c7f-4b57-9c5b-fc716eaf689e/metadata.json",
     "indexed": true,
-    "indexed_chunks": 5
+    "indexed_chunks": 5,
+    "extracted_path": "/Users/luzuko/groundtruth-clean/backend/outputs/a292f044-3c7f-4b57-9c5b-fc716eaf689e/extracted.json"
+  },
+  "76faa534-f7dd-4ef0-a593-cbdce3e25729": {
+    "doc_id": "76faa534-f7dd-4ef0-a593-cbdce3e25729",
+    "filename": "23 September 2022_form_013.pdf",
+    "upload_time": "2026-01-22T06:55:42.134154",
+    "status": "extracted",
+    "num_chunks": 8,
+    "file_path": "/Users/luzuko/groundtruth-clean/backend/outputs/76faa534-f7dd-4ef0-a593-cbdce3e25729/76faa534-f7dd-4ef0-a593-cbdce3e25729.pdf",
+    "metadata_path": "/Users/luzuko/groundtruth-clean/backend/outputs/76faa534-f7dd-4ef0-a593-cbdce3e25729/metadata.json",
+    "indexed": false,
+    "extracted_path": "/Users/luzuko/groundtruth-clean/backend/outputs/76faa534-f7dd-4ef0-a593-cbdce3e25729/extracted.json"
+  },
+  "4f05b518-6350-4a98-a6af-28caa4754bf9": {
+    "doc_id": "4f05b518-6350-4a98-a6af-28caa4754bf9",
+    "filename": "30 September 2022_form_005.pdf",
+    "upload_time": "2026-01-22T07:09:46.039189",
+    "status": "validated",
+    "num_chunks": 6,
+    "file_path": "/Users/luzuko/groundtruth-clean/backend/outputs/4f05b518-6350-4a98-a6af-28caa4754bf9/4f05b518-6350-4a98-a6af-28caa4754bf9.pdf",
+    "metadata_path": "/Users/luzuko/groundtruth-clean/backend/outputs/4f05b518-6350-4a98-a6af-28caa4754bf9/metadata.json",
+    "indexed": false,
+    "extracted_path": "/Users/luzuko/groundtruth-clean/backend/outputs/4f05b518-6350-4a98-a6af-28caa4754bf9/extracted.json",
+    "validated_at": "2026-01-24T03:01:03.306046"
+  },
+  "f0fbcc51-99de-4fa9-8348-33257869eef0": {
+    "doc_id": "f0fbcc51-99de-4fa9-8348-33257869eef0",
+    "filename": "16 September 2022_form_005.pdf",
+    "upload_time": "2026-01-22T07:17:11.176043",
+    "status": "extracted",
+    "num_chunks": 8,
+    "file_path": "/Users/luzuko/groundtruth-clean/backend/outputs/f0fbcc51-99de-4fa9-8348-33257869eef0/f0fbcc51-99de-4fa9-8348-33257869eef0.pdf",
+    "metadata_path": "/Users/luzuko/groundtruth-clean/backend/outputs/f0fbcc51-99de-4fa9-8348-33257869eef0/metadata.json",
+    "indexed": true,
+    "indexed_chunks": 8,
+    "extracted_path": "/Users/luzuko/groundtruth-clean/backend/outputs/f0fbcc51-99de-4fa9-8348-33257869eef0/extracted.json"
+  },
+  "40d9c2ab-c109-4ca5-a25f-8a8e07b68dbf": {
+    "doc_id": "40d9c2ab-c109-4ca5-a25f-8a8e07b68dbf",
+    "filename": "19 September 2022_form_005.pdf",
+    "upload_time": "2026-01-24T03:16:06.564524",
+    "status": "extracted",
+    "num_chunks": 8,
+    "file_path": "/Users/luzuko/groundtruth-clean/backend/outputs/40d9c2ab-c109-4ca5-a25f-8a8e07b68dbf/40d9c2ab-c109-4ca5-a25f-8a8e07b68dbf.pdf",
+    "metadata_path": "/Users/luzuko/groundtruth-clean/backend/outputs/40d9c2ab-c109-4ca5-a25f-8a8e07b68dbf/metadata.json",
+    "indexed": true,
+    "indexed_chunks": 8,
+    "extracted_path": "/Users/luzuko/groundtruth-clean/backend/outputs/40d9c2ab-c109-4ca5-a25f-8a8e07b68dbf/extracted.json"
+  },
+  "ced3d095-3164-4ed8-82fe-ad10b00392dd": {
+    "doc_id": "ced3d095-3164-4ed8-82fe-ad10b00392dd",
+    "filename": "25 September 2022_form_004.pdf",
+    "upload_time": "2026-01-27T11:03:16.981699",
+    "status": "extracted",
+    "num_chunks": 7,
+    "file_path": "/Users/luzuko/groundtruth-clean/backend/outputs/ced3d095-3164-4ed8-82fe-ad10b00392dd/ced3d095-3164-4ed8-82fe-ad10b00392dd.pdf",
+    "metadata_path": "/Users/luzuko/groundtruth-clean/backend/outputs/ced3d095-3164-4ed8-82fe-ad10b00392dd/metadata.json",
+    "indexed": true,
+    "indexed_chunks": 7,
+    "extracted_path": "/Users/luzuko/groundtruth-clean/backend/outputs/ced3d095-3164-4ed8-82fe-ad10b00392dd/extracted.json"
   }
 }

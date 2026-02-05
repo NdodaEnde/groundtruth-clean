@@ -1,25 +1,32 @@
 """
 GroundTruth Backend - Transport Client Edition
 Multi-tenant document processing with Supabase + LandingAI ADE
-Features: Upload → Parse → Extract → Validate → Approve → RAG Search
+Features: Upload → Parse → Extract → Validate → Approve → RAG Search → Chat
 """
 
 import os
 import sys
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Load environment variables FIRST
-load_dotenv()
+#load_dotenv()
+
+BASE_DIR = Path(__file__).resolve().parent
+ENV_PATH = BASE_DIR / ".env"
+
+load_dotenv(dotenv_path=ENV_PATH)
+print(f"DEBUG: OPENAI_API_KEY loaded: {os.getenv('OPENAI_API_KEY', 'NOT SET')[:20]}...")
 
 import uuid
 import json
 import shutil
 import logging
-from pathlib import Path
+#from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -35,6 +42,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+if not os.getenv("OPENAI_API_KEY"):
+    raise RuntimeError("OPENAI_API_KEY is missing. Check backend/.env")
+
+
 # LandingAI imports
 try:
     from landingai_ade import LandingAIADE
@@ -49,13 +60,23 @@ except ImportError as e:
 
 # Supabase imports
 try:
-    from supabase_client import DocumentDB, TransportIncidentDB, supabase
+    from supabase import create_client, Client
     SUPABASE_AVAILABLE = True
-    logger.info("✅ Supabase client loaded successfully")
+    logger.info("✅ Supabase module loaded successfully")
 except ImportError as e:
     SUPABASE_AVAILABLE = False
-    logger.warning(f"⚠️ Supabase client not available: {e}")
-    logger.warning("Multi-tenant features disabled. Run: pip install supabase")
+    logger.warning(f"⚠️ Supabase not available: {e}")
+    logger.warning("Run: pip install supabase")
+
+# OpenAI imports (for chat)
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+    logger.info("✅ OpenAI module loaded successfully")
+except ImportError as e:
+    OPENAI_AVAILABLE = False
+    logger.warning(f"⚠️ OpenAI not available: {e}")
+    logger.warning("Run: pip install openai")
 
 # =============================================================================
 # CONFIGURATION
@@ -68,7 +89,12 @@ class Config:
     VISION_AGENT_API_KEY = os.getenv("VISION_AGENT_API_KEY")
     
     # Supabase settings
-    ORGANIZATION_ID = os.getenv("ORGANIZATION_ID")
+    SUPABASE_URL = os.getenv("SUPABASE_URL")
+    SUPABASE_KEY = os.getenv("SUPABASE_KEY")  # Use service_role key for backend
+    ORGANIZATION_ID = os.getenv("ORGANIZATION_ID", "default_org")
+    
+    # OpenAI settings
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     
     # Application settings
     MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
@@ -76,15 +102,39 @@ class Config:
     
     # Server settings
     HOST = os.getenv("HOST", "0.0.0.0")
-    PORT = int(os.getenv("PORT", "8000"))
+    PORT = int(os.getenv("PORT", "8001"))
 
 # Verify API keys
 if not Config.LANDING_AI_API_KEY and not Config.VISION_AGENT_API_KEY:
     logger.error("❌ No API key found. Set LANDING_AI_API_KEY or VISION_AGENT_API_KEY in .env")
     sys.exit(1)
 
-if SUPABASE_AVAILABLE and not Config.ORGANIZATION_ID:
-    logger.warning("⚠️ ORGANIZATION_ID not set - multi-tenant features may not work")
+# Initialize Supabase client
+supabase: Optional[Client] = None
+if SUPABASE_AVAILABLE and Config.SUPABASE_URL and Config.SUPABASE_KEY:
+    try:
+        supabase = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+        logger.info("✅ Supabase client initialized")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to initialize Supabase: {e}")
+        SUPABASE_AVAILABLE = False
+else:
+    if SUPABASE_AVAILABLE:
+        logger.warning("⚠️ SUPABASE_URL or SUPABASE_KEY not set")
+    SUPABASE_AVAILABLE = False
+
+# Initialize OpenAI client (for chat)
+openai_client: Optional[OpenAI] = None
+if OPENAI_AVAILABLE and Config.OPENAI_API_KEY:
+    try:
+        openai_client = OpenAI(api_key=Config.OPENAI_API_KEY)
+        logger.info("✅ OpenAI client initialized for chat")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to initialize OpenAI: {e}")
+        openai_client = None
+else:
+    if OPENAI_AVAILABLE and not Config.OPENAI_API_KEY:
+        logger.warning("⚠️ OPENAI_API_KEY not set - chat will use fallback mode")
 
 # =============================================================================
 # FASTAPI APPLICATION
@@ -92,8 +142,8 @@ if SUPABASE_AVAILABLE and not Config.ORGANIZATION_ID:
 
 app = FastAPI(
     title="GroundTruth API - Transport Edition",
-    version="2.0.0",
-    description="Multi-tenant document processing with validation workflow"
+    version="2.1.0",
+    description="Multi-tenant document processing with validation workflow and RAG chat"
 )
 
 # CORS
@@ -140,7 +190,7 @@ logger.info(f"📂 Loaded {len(documents_store)} documents from index")
 landing_client = LandingAIADE()
 
 # =============================================================================
-# PYDANTIC MODELS
+# PYDANTIC MODELS - API Responses
 # =============================================================================
 
 class DocumentResponse(BaseModel):
@@ -155,68 +205,68 @@ class DocumentResponse(BaseModel):
 class ChunkResponse(BaseModel):
     chunks: List[dict]
 
-# === Extraction Schema Models ===
+# =============================================================================
+# PRE-TRIP CHECKLIST EXTRACTION SCHEMA
+# =============================================================================
 
-class DriverInfo(BaseModel):
-    driver_name: Optional[str] = Field(None, description="Full name of the driver")
-    driver_id: Optional[str] = Field(None, description="Driver's SA ID number (13 digits)")
-    license_number: Optional[str] = Field(None, description="Driver's license number")
-    vehicle_registration: Optional[str] = Field(None, description="Vehicle registration number (e.g., ABC123GP)")
-    vehicle_type: Optional[str] = Field(None, description="Type of vehicle (truck, van, car, bakkie, etc.)")
+class VehicleHeader(BaseModel):
+    """Header information from the checklist"""
+    vehicle_reg_no: Optional[str] = Field(None, description="Vehicle registration number (e.g., KKJ 770 NW)")
+    drivers_name: Optional[str] = Field(None, description="Driver's full name")
+    date: Optional[str] = Field(None, description="Date of inspection in format DD/MM/YY or YYYY-MM-DD")
+    vehicle_mileage: Optional[str] = Field(None, description="Vehicle mileage reading")
 
-class IncidentDetails(BaseModel):
-    incident_date: Optional[str] = Field(None, description="Date of incident in YYYY-MM-DD format")
-    incident_time: Optional[str] = Field(None, description="Time of incident in HH:MM 24-hour format")
-    location: Optional[str] = Field(None, description="Location/address where incident occurred")
-    gps_coordinates: Optional[str] = Field(None, description="GPS coordinates if available")
-    incident_type: Optional[str] = Field(None, description="Type: accident, breakdown, theft, damage, traffic_violation, other")
-    description: Optional[str] = Field(None, description="Detailed description of what happened")
 
-class DamageAssessment(BaseModel):
-    vehicle_damage: Optional[str] = Field(None, description="Description of damage to company vehicle")
-    third_party_damage: Optional[str] = Field(None, description="Description of damage to third party property/vehicles")
-    estimated_cost: Optional[float] = Field(None, description="Estimated repair cost in South African Rands")
+class InspectionItem(BaseModel):
+    """Single inspection item with pre-trip and post-trip status"""
+    item_name: Optional[str] = Field(None, description="Name of the inspection item (e.g., BODY WORK, LICENSE DISK)")
+    condition: Optional[str] = Field(None, description="Condition description (e.g., Scratched, Valid, Working)")
+    pre_trip_yes: Optional[bool] = Field(None, description="Pre-trip inspection: YES checked")
+    pre_trip_no: Optional[bool] = Field(None, description="Pre-trip inspection: NO checked")
+    remarks: Optional[str] = Field(None, description="Remarks or notes for this item")
+    post_trip_yes: Optional[bool] = Field(None, description="Post-trip inspection: YES checked")
+    post_trip_no: Optional[bool] = Field(None, description="Post-trip inspection: NO checked")
 
-class Injuries(BaseModel):
-    injuries_reported: Optional[str] = Field(None, description="Were there any injuries? Answer: yes or no")
-    injury_details: Optional[str] = Field(None, description="Details of injuries sustained (if any)")
-    medical_attention: Optional[str] = Field(None, description="Was medical attention required? Answer: yes or no")
 
-class WitnessInfo(BaseModel):
-    name: Optional[str] = Field(None, description="Witness full name")
-    contact: Optional[str] = Field(None, description="Witness contact number")
-    statement: Optional[str] = Field(None, description="Witness statement about incident")
+class ConsumableLevel(BaseModel):
+    """Consumable/fluid level item with before and after readings"""
+    item_name: Optional[str] = Field(None, description="Item name (e.g., Amount of Fuel, Brake Fluid, Engine Oil)")
+    before_trip_level: Optional[str] = Field(None, description="Level before trip (F, 3/4, 1/2, 1/4, E)")
+    after_trip_level: Optional[str] = Field(None, description="Level after trip (F, 3/4, 1/2, 1/4, E)")
 
-class Witnesses(BaseModel):
-    witness_present: Optional[str] = Field(None, description="Were there witnesses? Answer: yes or no")
-    witness_details: Optional[List[WitnessInfo]] = Field(None, description="List of witness information")
 
-class AdditionalInfo(BaseModel):
-    police_reported: Optional[str] = Field(None, description="Was incident reported to police? Answer: yes or no")
-    case_number: Optional[str] = Field(None, description="Police case number or reference")
-    police_station: Optional[str] = Field(None, description="Police station where reported")
-    notes: Optional[str] = Field(None, description="Any additional notes or observations")
+class TyreCondition(BaseModel):
+    """Tyre condition with brand and status"""
+    position: Optional[str] = Field(None, description="Tyre position (Front L, Front R, Rear L, Rear R)")
+    before_condition: Optional[str] = Field(None, description="Condition before trip (Good, Fair, Bad)")
+    before_brand: Optional[str] = Field(None, description="Tyre brand before trip")
+    after_condition: Optional[str] = Field(None, description="Condition after trip (Good, Fair, Bad)")
+    after_brand: Optional[str] = Field(None, description="Tyre brand after trip")
 
-class TransportIncidentExtraction(BaseModel):
-    """Complete schema for transport incident report extraction"""
-    driver_info: Optional[DriverInfo] = Field(None, description="Information about the driver involved")
-    incident_details: Optional[IncidentDetails] = Field(None, description="Details about the incident")
-    damage_assessment: Optional[DamageAssessment] = Field(None, description="Assessment of damages and costs")
-    injuries: Optional[Injuries] = Field(None, description="Information about any injuries")
-    witnesses: Optional[Witnesses] = Field(None, description="Witness information if applicable")
-    additional_info: Optional[AdditionalInfo] = Field(None, description="Additional incident information")
 
-# === RAG Models ===
+class Signatures(BaseModel):
+    """Signature fields"""
+    receiver_name: Optional[str] = Field(None, description="Name of Receiver")
+    dept_representative_name: Optional[str] = Field(None, description="Name of Dept Representative")
+    fuel_card_issued: Optional[bool] = Field(None, description="Was fuel card issued?")
+    keys_issued: Optional[bool] = Field(None, description="Were keys issued?")
 
-class IngestRequest(BaseModel):
-    doc_id: str
-    force: bool = False
 
-class IngestResponse(BaseModel):
-    doc_id: str
-    chunks_indexed: int
-    status: str
-    message: str
+class PreTripChecklistExtraction(BaseModel):
+    """
+    Complete schema for Yarona Pool Vehicle Inspection Checklist
+    Captures pre-trip and post-trip inspection data
+    """
+    vehicle_header: Optional[VehicleHeader] = Field(None, description="Vehicle and driver header information")
+    inspection_items: Optional[List[InspectionItem]] = Field(None, description="List of inspection items with pre/post trip status")
+    consumable_levels: Optional[List[ConsumableLevel]] = Field(None, description="Fluid/consumable levels before and after trip")
+    tyre_conditions: Optional[List[TyreCondition]] = Field(None, description="Tyre condition and brand for each position")
+    signatures: Optional[Signatures] = Field(None, description="Signature information")
+
+
+# =============================================================================
+# RAG MODELS
+# =============================================================================
 
 class QueryRequest(BaseModel):
     query: str
@@ -243,7 +293,9 @@ class VectorStoreStats(BaseModel):
     total_documents: int
     indexed_doc_ids: List[str]
 
-# === Q&A Models ===
+# =============================================================================
+# CHAT MODELS (for /api/chat endpoint)
+# =============================================================================
 
 class ChatMessage(BaseModel):
     role: str
@@ -254,17 +306,158 @@ class ChatRequest(BaseModel):
     conversation_history: Optional[List[ChatMessage]] = []
     n_results: int = 5
 
-class SourceReference(BaseModel):
+class ChatSource(BaseModel):
     doc_id: str
     chunk_id: str
-    filename: Optional[str] = None
+    filename: str
     page: int
     chunk_type: str
     text: str
+    similarity_score: float
 
 class ChatResponse(BaseModel):
     answer: str
-    sources: List[SourceReference]
+    sources: List[ChatSource]
+    question: str
+
+# =============================================================================
+# SUPABASE DATABASE HELPERS
+# =============================================================================
+
+class SupabaseDB:
+    """Helper class for Supabase database operations"""
+    
+    @staticmethod
+    def save_document(doc_id: str, filename: str, organization_id: str, status: str = 'uploaded'):
+        """Save document metadata to Supabase"""
+        if not supabase:
+            return None
+        
+        try:
+            data = {
+                'doc_id': doc_id,
+                'filename': filename,
+                'organization_id': organization_id,
+                'status': status,
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            result = supabase.table('documents').insert(data).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error saving document to Supabase: {e}")
+            return None
+    
+    @staticmethod
+    def update_document(doc_id: str, **kwargs):
+        """Update document in Supabase"""
+        if not supabase:
+            return None
+        
+        try:
+            kwargs['updated_at'] = datetime.utcnow().isoformat()
+            result = supabase.table('documents').update(kwargs).eq('doc_id', doc_id).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error updating document in Supabase: {e}")
+            return None
+    
+    @staticmethod
+    def get_document(doc_id: str):
+        """Get document from Supabase"""
+        if not supabase:
+            return None
+        
+        try:
+            result = supabase.table('documents').select('*').eq('doc_id', doc_id).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error getting document from Supabase: {e}")
+            return None
+    
+    @staticmethod
+    def save_vehicle_inspection(doc_id: str, organization_id: str, validated_data: dict, validated_by: str):
+        """Save validated vehicle inspection to Supabase"""
+        if not supabase:
+            logger.warning("Supabase not available - saving to local file")
+            return SupabaseDB._save_to_local(doc_id, validated_data)
+        
+        try:
+            # Flatten the data for storage
+            data = {
+                'doc_id': doc_id,
+                'organization_id': organization_id,
+                'validated_by': validated_by,
+                'validated_at': datetime.utcnow().isoformat(),
+                
+                # Header fields
+                'vehicle_reg_no': validated_data.get('vehicle_reg_no'),
+                'drivers_name': validated_data.get('drivers_name'),
+                'inspection_date': validated_data.get('date'),
+                'vehicle_mileage': validated_data.get('vehicle_mileage'),
+                
+                # Store complex data as JSONB
+                'inspection_items': validated_data.get('inspection_items', []),
+                'consumables': validated_data.get('consumables', []),
+                'tyres': validated_data.get('tyres', []),
+                
+                # Signatures
+                'fuel_card_issued': validated_data.get('fuel_card_issued', False),
+                'keys_issued': validated_data.get('keys_issued', False),
+                'receiver_name': validated_data.get('receiver_name'),
+                'dept_representative_name': validated_data.get('dept_representative_name'),
+                
+                # Full data backup
+                'raw_validated_data': validated_data
+            }
+            
+            result = supabase.table('vehicle_inspections').insert(data).execute()
+            logger.info(f"✅ Saved vehicle inspection to Supabase: {doc_id}")
+            return result.data[0] if result.data else None
+            
+        except Exception as e:
+            logger.error(f"Error saving to Supabase: {e}")
+            # Fallback to local storage
+            return SupabaseDB._save_to_local(doc_id, validated_data)
+    
+    @staticmethod
+    def _save_to_local(doc_id: str, validated_data: dict):
+        """Fallback: Save to local JSON file"""
+        try:
+            validated_dir = OUTPUTS_DIR / "validated"
+            validated_dir.mkdir(exist_ok=True)
+            
+            filepath = validated_dir / f"{doc_id}_validated.json"
+            with open(filepath, 'w') as f:
+                json.dump({
+                    'doc_id': doc_id,
+                    'validated_at': datetime.utcnow().isoformat(),
+                    'data': validated_data
+                }, f, indent=2)
+            
+            logger.info(f"✅ Saved validation to local file: {filepath}")
+            return {'doc_id': doc_id, 'storage': 'local'}
+        except Exception as e:
+            logger.error(f"Error saving to local file: {e}")
+            return None
+    
+    @staticmethod
+    def get_inspections(organization_id: str, limit: int = 100):
+        """Get vehicle inspections from Supabase"""
+        if not supabase:
+            return []
+        
+        try:
+            result = supabase.table('vehicle_inspections')\
+                .select('*')\
+                .eq('organization_id', organization_id)\
+                .order('validated_at', desc=True)\
+                .limit(limit)\
+                .execute()
+            return result.data
+        except Exception as e:
+            logger.error(f"Error getting inspections: {e}")
+            return []
 
 # =============================================================================
 # DOCUMENT PROCESSOR
@@ -334,90 +527,6 @@ class DocumentProcessor:
 processor = DocumentProcessor()
 
 # =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-def calculate_modifications(original: dict, validated: dict, path: str = "") -> List[dict]:
-    """Calculate what was changed during human validation"""
-    modifications = []
-    
-    def compare(orig, val, prefix=""):
-        if isinstance(orig, dict) and isinstance(val, dict):
-            for key in set(list(orig.keys()) + list(val.keys())):
-                current_path = f"{prefix}.{key}" if prefix else key
-                compare(orig.get(key), val.get(key), current_path)
-        elif orig != val:
-            modifications.append({
-                "field": prefix,
-                "original": orig,
-                "validated": val,
-                "timestamp": datetime.utcnow().isoformat()
-            })
-    
-    compare(original, validated)
-    return modifications
-
-async def index_validated_data(doc_id: str, validated_data: dict):
-    """Index validated data in Qdrant for RAG search"""
-    
-    from vector_store import get_vector_store
-    from embeddings import get_embedding_service
-    
-    chunks = []
-    
-    # Driver info chunk
-    driver_info = validated_data.get('driver_info', {})
-    if driver_info and any(driver_info.values()):
-        text = f"Driver: {driver_info.get('driver_name', 'Unknown')} (ID: {driver_info.get('driver_id', 'N/A')}). Vehicle: {driver_info.get('vehicle_registration', 'N/A')}"
-        chunks.append({'text': text, 'type': 'driver_info', 'metadata': driver_info})
-    
-    # Incident details chunk
-    incident = validated_data.get('incident_details', {})
-    if incident and any(incident.values()):
-        text = f"Incident on {incident.get('incident_date', 'unknown date')} at {incident.get('incident_time', 'unknown time')} in {incident.get('location', 'unknown location')}. Type: {incident.get('incident_type', 'unspecified')}. Description: {incident.get('description', 'No description')}"
-        chunks.append({'text': text, 'type': 'incident', 'metadata': incident})
-    
-    # Damage chunk
-    damage = validated_data.get('damage_assessment', {})
-    if damage and any(damage.values()):
-        text = f"Vehicle damage: {damage.get('vehicle_damage', 'None reported')}. Third party damage: {damage.get('third_party_damage', 'None reported')}. Estimated cost: R{damage.get('estimated_cost', 0)}"
-        chunks.append({'text': text, 'type': 'damage', 'metadata': damage})
-    
-    if not chunks:
-        logger.warning(f"⚠️ No data to index for document: {doc_id}")
-        return
-    
-    embedding_service = get_embedding_service()
-    vector_store = get_vector_store()
-    
-    qdrant_ids = []
-    
-    for idx, chunk in enumerate(chunks):
-        try:
-            embedding = embedding_service.embed_text(chunk['text'])
-            chunk_id = f"{doc_id}-validated-{idx}"
-            
-            vector_store.add(
-                embedding=embedding,
-                document=chunk['text'],
-                metadata={
-                    'doc_id': doc_id,
-                    'chunk_id': chunk_id,
-                    'chunk_type': chunk['type'],
-                    'organization_id': Config.ORGANIZATION_ID,
-                    'product_type': 'groundtruth_transport',
-                    **chunk['metadata']
-                }
-            )
-            
-            qdrant_ids.append(chunk_id)
-            
-        except Exception as e:
-            logger.error(f"Error indexing chunk {idx}: {e}")
-    
-    logger.info(f"✅ Indexed {len(qdrant_ids)} chunks for document: {doc_id}")
-
-# =============================================================================
 # API ENDPOINTS - BASIC
 # =============================================================================
 
@@ -426,11 +535,12 @@ async def root():
     """Health check"""
     return {
         "app": "GroundTruth API - Transport Edition",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "status": "running",
         "features": {
             "landingai": AGENTIC_DOC_AVAILABLE,
-            "supabase": SUPABASE_AVAILABLE
+            "supabase": SUPABASE_AVAILABLE,
+            "openai_chat": openai_client is not None
         }
     }
 
@@ -440,10 +550,11 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "GroundTruth Transport Document Processor",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "landingai_available": AGENTIC_DOC_AVAILABLE,
         "supabase_available": SUPABASE_AVAILABLE,
-        "organization_id": Config.ORGANIZATION_ID if SUPABASE_AVAILABLE else None
+        "openai_available": openai_client is not None,
+        "organization_id": Config.ORGANIZATION_ID
     }
 
 # =============================================================================
@@ -454,7 +565,6 @@ async def health_check():
 async def upload_document(file: UploadFile = File(...)):
     """
     Step 1: Upload and parse document
-    Saves to Supabase with status tracking
     """
     
     if not AGENTIC_DOC_AVAILABLE:
@@ -485,22 +595,16 @@ async def upload_document(file: UploadFile = File(...)):
         
         logger.info(f"📄 Saved file: {file_path}")
         
-        # Create document record in Supabase
-        if SUPABASE_AVAILABLE and Config.ORGANIZATION_ID:
-            DocumentDB.create(
-                org_id=Config.ORGANIZATION_ID,
-                filename=file.filename,
-                file_path=str(file_path),
-                document_type='transport_incident_report'
-            )
-            DocumentDB.update(doc_id, status='parsing')
+        # Save to Supabase
+        if SUPABASE_AVAILABLE:
+            SupabaseDB.save_document(doc_id, file.filename, Config.ORGANIZATION_ID, 'parsing')
         
         # Parse with LandingAI
         result = processor.process_document(str(file_path))
         
         if not result.get('success'):
             if SUPABASE_AVAILABLE:
-                DocumentDB.update(doc_id, status='parse_failed')
+                SupabaseDB.update_document(doc_id, status='parse_failed')
             shutil.rmtree(doc_dir)
             raise HTTPException(status_code=500, detail=result.get('error', 'Processing failed'))
         
@@ -510,13 +614,8 @@ async def upload_document(file: UploadFile = File(...)):
             json.dump(result['parsed_data'], f, indent=2, default=str)
         
         # Update Supabase
-        if SUPABASE_AVAILABLE and Config.ORGANIZATION_ID:
-            DocumentDB.update(
-                doc_id,
-                status='parsed',
-                parsed_json=result['parsed_data']['chunks'],
-                parsed_markdown=result['parsed_data']['markdown']
-            )
+        if SUPABASE_AVAILABLE:
+            SupabaseDB.update_document(doc_id, status='parsed')
         
         # Store in memory
         doc_info = {
@@ -576,13 +675,6 @@ async def upload_document(file: UploadFile = File(...)):
             doc_info["indexed"] = True
             doc_info["indexed_chunks"] = chunks_added
             
-            if SUPABASE_AVAILABLE:
-                DocumentDB.update(
-                    doc_id,
-                    indexed_at=datetime.utcnow().isoformat(),
-                    qdrant_ids=[c["chunk_id"] for c in cleaned_chunks]
-                )
-            
         except Exception as index_error:
             logger.warning(f"⚠️ Auto-indexing failed: {index_error}")
             doc_info["indexed"] = False
@@ -599,64 +691,57 @@ async def upload_document(file: UploadFile = File(...)):
             shutil.rmtree(doc_dir)
         
         logger.error(f"❌ Error processing document: {e}")
-        
-        if SUPABASE_AVAILABLE:
-            try:
-                DocumentDB.update(doc_id, status='failed')
-            except:
-                pass
-        
         raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
 
 
 @app.post("/api/extract")
-async def extract_document_data(doc_id: str):
+async def extract_document_data(doc_id: str, force: bool = False):
     """
     Step 2: Extract structured data using LandingAI ADE Extract
     Converts parsed markdown into structured fields
+    
+    Args:
+        doc_id: Document ID
+        force: If True, re-extract even if cached data exists
     """
     
     try:
-        # Get document from Supabase or memory
-        doc = None
-        if SUPABASE_AVAILABLE:
-            doc = DocumentDB.get(doc_id)
-        
-        if not doc and doc_id in documents_store:
-            # Fallback to memory store
-            doc_info = documents_store[doc_id]
-            metadata_path = Path(doc_info.get('metadata_path', ''))
-            if metadata_path.exists():
-                with open(metadata_path, 'r') as f:
-                    parsed_data = json.load(f)
-                doc = {
-                    'id': doc_id,
-                    'status': doc_info.get('status', 'parsed'),
-                    'parsed_markdown': parsed_data.get('markdown')
-                }
-        
-        if not doc:
+        # Get document from memory store
+        if doc_id not in documents_store:
             raise HTTPException(status_code=404, detail="Document not found")
         
-        if doc['status'] not in ['parsed', 'extracted']:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Document must be parsed first. Current status: {doc['status']}"
-            )
+        doc_info = documents_store[doc_id]
         
-        # Get markdown for extraction
-        markdown = doc.get('parsed_markdown')
+        # Check for cached extraction (prevents redundant API calls)
+        extracted_path = OUTPUTS_DIR / doc_id / "extracted.json"
+        if not force and extracted_path.exists():
+            logger.info(f"📦 Returning cached extraction for document: {doc_id}")
+            with open(extracted_path, 'r') as f:
+                cached_data = json.load(f)
+            return {
+                "doc_id": doc_id,
+                "status": "extracted",
+                "extracted_data": cached_data,
+                "cached": True,
+                "message": "Returning cached extraction (use force=true to re-extract)"
+            }
+        
+        metadata_path = Path(doc_info.get('metadata_path', ''))
+        
+        if not metadata_path.exists():
+            raise HTTPException(status_code=404, detail="Parsed data not found")
+        
+        with open(metadata_path, 'r') as f:
+            parsed_data = json.load(f)
+        
+        markdown = parsed_data.get('markdown')
         if not markdown:
             raise HTTPException(status_code=400, detail="No parsed markdown available")
         
         logger.info(f"🔍 Extracting structured data from document: {doc_id}")
         
-        # Update status
-        if SUPABASE_AVAILABLE:
-            DocumentDB.update(doc_id, status='extracting')
-        
-        # Convert schema
-        schema = pydantic_to_json_schema(TransportIncidentExtraction)
+        # Convert schema to JSON schema for LandingAI
+        schema = pydantic_to_json_schema(PreTripChecklistExtraction)
         
         # Extract using LandingAI ADE
         extract_response = landing_client.extract(
@@ -665,15 +750,24 @@ async def extract_document_data(doc_id: str):
             model="extract-latest"
         )
         
+        # Convert extraction result to dict
         extracted_data = extract_response.extraction
+        if hasattr(extracted_data, 'model_dump'):
+            extracted_data = extracted_data.model_dump()
+        elif hasattr(extracted_data, 'dict'):
+            extracted_data = extracted_data.dict()
         
         # Save extracted data
+        with open(extracted_path, 'w') as f:
+            json.dump(extracted_data, f, indent=2, default=str)
+        
+        # Update document status
+        documents_store[doc_id]['status'] = 'extracted'
+        documents_store[doc_id]['extracted_path'] = str(extracted_path)
+        save_document_store(documents_store)
+        
         if SUPABASE_AVAILABLE:
-            DocumentDB.update(
-                doc_id,
-                status='extracted',
-                extracted_json=extracted_data
-            )
+            SupabaseDB.update_document(doc_id, status='extracted')
         
         logger.info(f"✅ Data extracted successfully: {doc_id}")
         
@@ -681,6 +775,7 @@ async def extract_document_data(doc_id: str):
             "doc_id": doc_id,
             "status": "extracted",
             "extracted_data": extracted_data,
+            "cached": False,
             "message": "Document ready for validation"
         }
     
@@ -690,60 +785,43 @@ async def extract_document_data(doc_id: str):
         logger.error(f"❌ Extraction error: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        
-        if SUPABASE_AVAILABLE:
-            try:
-                DocumentDB.update(doc_id, status='extraction_failed')
-            except:
-                pass
-        
         raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
 
 
 @app.post("/api/validate")
-async def validate_document(doc_id: str, validated_data: dict, validated_by: str = "demo_user"):
+async def validate_document(doc_id: str, validated_by: str = "user", validated_data: dict = Body(...)):
     """
-    Step 3: Save human-validated data
-    Tracks modifications for ML training
+    Step 3: Save human-validated data to Supabase
     """
     
     try:
-        doc = DocumentDB.get(doc_id) if SUPABASE_AVAILABLE else None
-        
-        if not doc:
+        if doc_id not in documents_store:
             raise HTTPException(status_code=404, detail="Document not found")
         
-        if doc['status'] != 'extracted':
-            raise HTTPException(
-                status_code=400,
-                detail=f"Document must be extracted first. Current status: {doc['status']}"
-            )
+        logger.info(f"💾 Saving validated data for document: {doc_id}")
         
-        # Calculate modifications
-        extracted_json = doc.get('extracted_json', {})
-        if isinstance(extracted_json, str):
-            extracted_json = json.loads(extracted_json)
+        # Save to Supabase
+        result = SupabaseDB.save_vehicle_inspection(
+            doc_id=doc_id,
+            organization_id=Config.ORGANIZATION_ID,
+            validated_data=validated_data,
+            validated_by=validated_by
+        )
         
-        modifications = calculate_modifications(extracted_json, validated_data)
+        # Update document status
+        documents_store[doc_id]['status'] = 'validated'
+        documents_store[doc_id]['validated_at'] = datetime.utcnow().isoformat()
+        save_document_store(documents_store)
         
-        # Save validated data
         if SUPABASE_AVAILABLE:
-            DocumentDB.update(
-                doc_id,
-                status='validated',
-                validated_json=validated_data,
-                validated_by=validated_by,
-                validated_at=datetime.utcnow().isoformat(),
-                modifications=modifications
-            )
+            SupabaseDB.update_document(doc_id, status='validated')
         
         logger.info(f"✅ Document validated: {doc_id}")
-        logger.info(f"📝 Human corrections: {len(modifications)} fields changed")
         
         return {
             "doc_id": doc_id,
             "status": "validated",
-            "modifications_count": len(modifications),
+            "storage": "supabase" if SUPABASE_AVAILABLE and supabase else "local",
             "message": "Validation saved successfully"
         }
     
@@ -751,88 +829,39 @@ async def validate_document(doc_id: str, validated_data: dict, validated_by: str
         raise
     except Exception as e:
         logger.error(f"❌ Validation error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Validation failed: {str(e)}")
 
 
-@app.post("/api/approve")
-async def approve_document(doc_id: str):
-    """
-    Step 4: Approve validated document
-    Creates incident record and indexes for RAG
-    """
+@app.get("/api/inspections")
+async def get_inspections(limit: int = 100):
+    """Get validated vehicle inspections"""
     
-    try:
-        doc = DocumentDB.get(doc_id) if SUPABASE_AVAILABLE else None
+    if SUPABASE_AVAILABLE:
+        inspections = SupabaseDB.get_inspections(Config.ORGANIZATION_ID, limit)
+        return {"inspections": inspections, "count": len(inspections)}
+    else:
+        # Fallback: Read from local files
+        validated_dir = OUTPUTS_DIR / "validated"
+        inspections = []
         
-        if not doc:
-            raise HTTPException(status_code=404, detail="Document not found")
+        if validated_dir.exists():
+            for filepath in validated_dir.glob("*_validated.json"):
+                with open(filepath, 'r') as f:
+                    inspections.append(json.load(f))
         
-        if doc['status'] != 'validated':
-            raise HTTPException(
-                status_code=400,
-                detail=f"Document must be validated first. Current status: {doc['status']}"
-            )
-        
-        # Get validated data
-        validated_json = doc.get('validated_json', {})
-        if isinstance(validated_json, str):
-            validated_json = json.loads(validated_json)
-        
-        # Create transport incident
-        incident_id = None
-        if SUPABASE_AVAILABLE and Config.ORGANIZATION_ID:
-            incident_id = TransportIncidentDB.create(
-                org_id=Config.ORGANIZATION_ID,
-                document_id=doc_id,
-                validated_data=validated_json
-            )
-            
-            DocumentDB.update(
-                doc_id,
-                status='approved',
-                linked_entity_type='transport_incident',
-                linked_entity_id=incident_id
-            )
-        
-        # Index in Qdrant for RAG
-        await index_validated_data(doc_id, validated_json)
-        
-        if SUPABASE_AVAILABLE:
-            DocumentDB.update(
-                doc_id,
-                status='indexed',
-                indexed_at=datetime.utcnow().isoformat()
-            )
-        
-        logger.info(f"✅ Document approved: {doc_id}")
-        if incident_id:
-            logger.info(f"🎯 Incident created: {incident_id}")
-        logger.info(f"🔍 Indexed for search")
-        
-        return {
-            "doc_id": doc_id,
-            "incident_id": incident_id,
-            "status": "indexed",
-            "message": "Incident created and searchable"
-        }
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Approval error: {e}")
-        raise HTTPException(status_code=500, detail=f"Approval failed: {str(e)}")
+        return {"inspections": inspections, "count": len(inspections), "storage": "local"}
 
 # =============================================================================
-# API ENDPOINTS - DOCUMENT MANAGEMENT (Keep existing)
+# API ENDPOINTS - DOCUMENT MANAGEMENT
 # =============================================================================
 
 @app.get("/api/documents")
 async def get_documents():
     """Get list of all documents"""
-    if SUPABASE_AVAILABLE and Config.ORGANIZATION_ID:
-        docs = DocumentDB.get_by_org(Config.ORGANIZATION_ID)
-        return {"documents": docs}
     return {"documents": list(documents_store.values())}
+
 
 @app.get("/api/document/{doc_id}/chunks", response_model=ChunkResponse)
 async def get_document_chunks(doc_id: str):
@@ -850,11 +879,33 @@ async def get_document_chunks(doc_id: str):
         with open(metadata_path, 'r') as f:
             data = json.load(f)
         
-        return ChunkResponse(chunks=data.get('chunks', []))
+        # Transform chunks to normalize field names for frontend
+        chunks = data.get('chunks', [])
+        normalized_chunks = []
+        
+        for chunk in chunks:
+            normalized = {
+                # Use markdown content if text is missing
+                'text': chunk.get('markdown') or chunk.get('text') or '',
+                # Normalize type field
+                'chunk_type': chunk.get('type') or chunk.get('chunk_type') or 'text',
+                # Ensure grounding is properly structured
+                'grounding': chunk.get('grounding', {}),
+            }
+            
+            # Copy any other fields that might be useful
+            for key in ['id', 'chunk_id', 'page', 'box', 'metadata']:
+                if key in chunk and key not in normalized:
+                    normalized[key] = chunk[key]
+            
+            normalized_chunks.append(normalized)
+        
+        return ChunkResponse(chunks=normalized_chunks)
         
     except Exception as e:
         logger.error(f"Error loading chunks: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to load chunks: {str(e)}")
+
 
 @app.get("/api/document/{doc_id}/pdf")
 async def get_document_pdf(doc_id: str):
@@ -874,6 +925,7 @@ async def get_document_pdf(doc_id: str):
         media_type="application/pdf" if file_path.suffix == '.pdf' else "application/octet-stream",
         filename=doc_info["filename"]
     )
+
 
 @app.delete("/api/document/{doc_id}")
 async def delete_document(doc_id: str):
@@ -903,7 +955,7 @@ async def delete_document(doc_id: str):
     return {"message": "Document deleted successfully", "doc_id": doc_id}
 
 # =============================================================================
-# API ENDPOINTS - RAG (Keep existing query endpoint)
+# API ENDPOINTS - RAG SEARCH
 # =============================================================================
 
 @app.post("/api/query", response_model=QueryResponse)
@@ -915,34 +967,33 @@ async def query_documents(request: QueryRequest):
         embedding_service = get_embedding_service()
         query_embedding = embedding_service.embed_text(request.query)
         
-        # Build filter
-        filter_dict = {}
-        if request.doc_id:
-            filter_dict['doc_id'] = request.doc_id
-        if request.chunk_type:
-            filter_dict['chunk_type'] = request.chunk_type
-        
-        # Search vector store
+        # Search vector store - pass doc_id and chunk_type directly (not as filter dict)
         vector_store = get_vector_store()
         results = vector_store.query(
             query_embedding=query_embedding,
             n_results=request.n_results,
-            filter=filter_dict if filter_dict else None
+            doc_id=request.doc_id,
+            chunk_type=request.chunk_type
         )
         
         # Format results
         search_results = []
         
-        for i in range(len(results['ids'])):
-            metadata = results['metadatas'][i]
+        ids = results.get('ids', [])
+        documents = results.get('documents', [])
+        metadatas = results.get('metadatas', [])
+        distances = results.get('distances', [])
+        
+        for i in range(len(ids)):
+            metadata = metadatas[i] if i < len(metadatas) else {}
             
             search_result = SearchResult(
-                chunk_id=results['ids'][i],
+                chunk_id=ids[i],
                 doc_id=metadata.get('doc_id', ''),
-                text=results['documents'][i],
+                text=documents[i] if i < len(documents) else '',
                 page=metadata.get('page', 0),
                 chunk_type=metadata.get('chunk_type', 'text'),
-                similarity_score=1.0 - results['distances'][i],
+                similarity_score=1.0 - (distances[i] if i < len(distances) else 1.0),
                 grounding=metadata.get('grounding')
             )
             
@@ -959,6 +1010,132 @@ async def query_documents(request: QueryRequest):
         import traceback
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Failed to query: {str(e)}")
+
+
+# =============================================================================
+# API ENDPOINTS - CHAT (RAG-powered Q&A)
+# =============================================================================
+
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat_with_documents(request: ChatRequest):
+    """
+    RAG-based chat endpoint.
+    1. Semantic search for relevant document chunks
+    2. Send chunks + question to OpenAI LLM
+    3. Return answer with sources
+    """
+    
+    try:
+        logger.info(f"💬 Chat query: {request.question[:100]}...")
+        
+        # Step 1: Retrieve relevant document chunks via semantic search
+        embedding_service = get_embedding_service()
+        query_embedding = embedding_service.embed_text(request.question)
+        
+        vector_store = get_vector_store()
+        results = vector_store.query(
+            query_embedding=query_embedding,
+            n_results=request.n_results
+        )
+        
+        # Format retrieved chunks
+        sources = []
+        context_chunks = []
+        
+        ids = results.get('ids', [])
+        documents = results.get('documents', [])
+        metadatas = results.get('metadatas', [])
+        distances = results.get('distances', [])
+        
+        for i in range(len(ids)):
+            chunk_id = ids[i]
+            metadata = metadatas[i] if i < len(metadatas) else {}
+            text = documents[i] if i < len(documents) else ''
+            distance = distances[i] if i < len(distances) else 1.0
+            
+            doc_id = metadata.get('doc_id', '')
+            doc_info = documents_store.get(doc_id, {})
+            
+            source = ChatSource(
+                doc_id=doc_id,
+                chunk_id=chunk_id,
+                filename=doc_info.get('filename', f'Document {doc_id[:8]}' if doc_id else 'Unknown'),
+                page=metadata.get('page', 0),
+                chunk_type=metadata.get('chunk_type', 'text'),
+                text=text[:500] if text else '',
+                similarity_score=round(1.0 - distance, 3)
+            )
+            sources.append(source)
+            
+            # Build context for LLM
+            context_chunks.append(f"""
+--- Source: {source.filename}, Page {source.page + 1} ---
+{text}
+""")
+        
+        # Step 2: Generate answer using LLM
+        if openai_client and sources:
+            context = "\n".join(context_chunks)
+            
+            # Build conversation history
+            history_messages = []
+            for msg in (request.conversation_history or [])[-6:]:  # Last 3 exchanges
+                history_messages.append({
+                    "role": msg.role,
+                    "content": msg.content
+                })
+            
+            system_prompt = f"""You are GroundTruth, an AI assistant that answers questions about transport documents, vehicle inspections, and fleet management.
+
+Use ONLY the information from these document excerpts to answer questions. If the answer cannot be found in the provided context, say so clearly.
+
+Be concise, accurate, and helpful. When referencing information, mention which document/page it came from.
+
+CONTEXT FROM DOCUMENTS:
+{context}
+"""
+            
+            messages = [
+                {"role": "system", "content": system_prompt},
+                *history_messages,
+                {"role": "user", "content": request.question}
+            ]
+            
+            try:
+                completion = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=messages,
+                    max_tokens=1000,
+                    temperature=0.3
+                )
+                answer = completion.choices[0].message.content
+                logger.info("✅ Generated answer using OpenAI")
+            except Exception as e:
+                logger.error(f"OpenAI API error: {e}")
+                answer = f"I found relevant documents but couldn't generate a response. OpenAI error: {str(e)}"
+                
+        elif sources:
+            # Fallback: Return relevant excerpts without LLM
+            answer = f"I found {len(sources)} relevant sections in your documents:\n\n"
+            for i, source in enumerate(sources[:3], 1):
+                answer += f"**{i}. {source.filename}** (Page {source.page + 1}):\n"
+                answer += f'"{source.text[:200]}..."\n\n'
+            answer += "\n_Configure OPENAI_API_KEY for AI-powered answers._"
+        else:
+            answer = "I couldn't find any relevant information in your uploaded documents. Try rephrasing your question or ensure documents are uploaded and indexed."
+        
+        return ChatResponse(
+            answer=answer,
+            sources=sources,
+            question=request.question
+        )
+        
+    except Exception as e:
+        logger.error(f"Chat error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+
 
 @app.get("/api/vector-store/stats", response_model=VectorStoreStats)
 async def get_vector_store_stats():
@@ -989,19 +1166,18 @@ async def get_vector_store_stats():
 async def startup_event():
     """Application startup"""
     logger.info("")
-    logger.info("⚡ GROUNDTRUTH TRANSPORT EDITION")
+    logger.info("⚡ GROUNDTRUTH TRANSPORT EDITION v2.1")
     logger.info("=" * 60)
     logger.info("✅ LandingAI ADE extraction enabled")
-    logger.info("✅ Visual grounding with bounding boxes")
-    logger.info(f"✅ Multi-tenant with Supabase: {SUPABASE_AVAILABLE}")
-    logger.info("✅ Vector database (ChromaDB) ready")
-    logger.info("✅ Semantic search across documents")
+    logger.info("✅ Pre-Trip Checklist schema configured")
+    logger.info(f"✅ Supabase integration: {SUPABASE_AVAILABLE}")
+    logger.info(f"✅ OpenAI chat: {openai_client is not None}")
+    logger.info("✅ Vector database ready")
     logger.info("")
     logger.info("🚀 Document Workflow:")
     logger.info("   POST   /api/upload       → Parse document")
     logger.info("   POST   /api/extract      → Extract structured data")
-    logger.info("   POST   /api/validate     → Human validation")
-    logger.info("   POST   /api/approve      → Create incident + index")
+    logger.info("   POST   /api/validate     → Human validation → Save to DB")
     logger.info("")
     logger.info("📄 Document Management:")
     logger.info("   GET    /api/documents")
@@ -1009,9 +1185,10 @@ async def startup_event():
     logger.info("   GET    /api/document/{doc_id}/pdf")
     logger.info("   DELETE /api/document/{doc_id}")
     logger.info("")
-    logger.info("🔍 RAG Search:")
-    logger.info("   POST   /api/query")
-    logger.info("   GET    /api/vector-store/stats")
+    logger.info("🔍 Search & Chat:")
+    logger.info("   POST   /api/query        → Semantic search")
+    logger.info("   POST   /api/chat         → RAG-powered Q&A")
+    logger.info("   GET    /api/inspections")
     logger.info("")
     logger.info(f"🌍 Server running on {Config.HOST}:{Config.PORT}")
     logger.info("")

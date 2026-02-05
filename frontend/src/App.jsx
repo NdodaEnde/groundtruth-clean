@@ -1,15 +1,16 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
-import { Upload, FileText, ZoomIn, ZoomOut, AlertCircle, Loader, MessageSquare } from 'lucide-react';
+import { Upload, FileText, ZoomIn, ZoomOut, AlertCircle, Loader, MessageSquare, Eye, Edit3 } from 'lucide-react';
 import axios from 'axios';
 import SearchBar from './SearchBar';
 import SearchResults from './SearchResults';
 import BatchUpload from './BatchUpload';
 import ChatInterface from './ChatInterface';
+import ValidationPanel from './ValidationPanel';
 import './App.css';
 
-// Configure PDF.js worker - use unpkg for better reliability
-pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+// Configure PDF.js worker - use CDN for reliability
+pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
 
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -37,6 +38,9 @@ function App() {
   // Panel state
   const [leftWidth, setLeftWidth] = useState(50);
   const [isDragging, setIsDragging] = useState(false);
+  
+  // Tab state - 'parsed' or 'validate'
+  const [activeTab, setActiveTab] = useState('parsed');
   
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
@@ -91,6 +95,7 @@ function App() {
       setDocuments(prev => [...prev, response.data]);
       setSelectedDocId(response.data.doc_id);
       setSelectedFilename(file.name);
+      setActiveTab('parsed'); // Reset to parsed tab on new upload
       
       // Load chunks
       await loadDocumentChunks(response.data.doc_id);
@@ -202,7 +207,15 @@ function App() {
     setSelectedFilename(filename);
     setSelectedChunkId(null);
     setHoveredChunkId(null);
+    setActiveTab('parsed'); // Reset to parsed tab when selecting new document
     await loadDocumentChunks(docId);
+  };
+
+  // Handle validation save success
+  const handleValidationSave = (validatedData) => {
+    console.log('Validation saved:', validatedData);
+    // Optionally reload documents or update status
+    loadDocuments();
   };
 
   // PDF options
@@ -535,52 +548,81 @@ function App() {
               onMouseDown={handleMouseDown}
             />
 
-            {/* Right Panel - Overview */}
+            {/* Right Panel - Tabbed View */}
             <div 
               className="overview-panel"
               style={{ width: `${100 - leftWidth}%` }}
             >
-              <div className="overview-header">
-                <h3>📄 Document Overview</h3>
-                <p className="subtitle">
-                  {chunks.length} section{chunks.length !== 1 ? 's' : ''} • Click to view in PDF
-                </p>
+              {/* Tab Header */}
+              <div className="tab-header">
+                <button 
+                  className={`tab-btn ${activeTab === 'parsed' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('parsed')}
+                >
+                  <Eye size={16} />
+                  Parsed View
+                </button>
+                <button 
+                  className={`tab-btn ${activeTab === 'validate' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('validate')}
+                >
+                  <Edit3 size={16} />
+                  Validate & Save
+                </button>
               </div>
 
-              <div className="overview-content" ref={overviewScrollRef}>
-                {chunks.length > 0 ? (
-                  chunks.map((chunk, idx) => {
-                    const chunkId = `chunk_${idx}`;
-                    const isSelected = selectedChunkId === chunkId;
-                    const isHovered = hoveredChunkId === chunkId;
-                    
-                    return (
-                      <div
-                        key={idx}
-                        id={chunkId}
-                        ref={el => chunkRefs.current[chunkId] = el}
-                        className={`chunk-card ${isSelected ? 'selected' : ''} ${isHovered ? 'hovered' : ''}`}
-                        onClick={() => handleChunkClick(chunkId, chunk.grounding, idx)}
-                        onMouseEnter={() => handleChunkHover(chunkId)}
-                        onMouseLeave={handleChunkUnhover}
-                      >
-                        <div className="chunk-header">
-                          <span className="chunk-page">
-                            {chunk.grounding?.page !== undefined ? `Page ${chunk.grounding.page + 1}` : 'N/A'}
-                          </span>
-                          <span className="chunk-type">{chunk.chunk_type || 'text'}</span>
-                        </div>
-                        <div 
-                          className="chunk-content"
-                          dangerouslySetInnerHTML={{ __html: chunk.text || 'No content' }}
-                        />
-                      </div>
-                    );
-                  })
-                ) : (
-                  <p className="empty-state">No chunks available</p>
-                )}
-              </div>
+              {/* Tab Content */}
+              {activeTab === 'parsed' ? (
+                <>
+                  <div className="overview-header">
+                    <h3>📄 Document Overview</h3>
+                    <p className="subtitle">
+                      {chunks.length} section{chunks.length !== 1 ? 's' : ''} • Click to view in PDF
+                    </p>
+                  </div>
+
+                  <div className="overview-content" ref={overviewScrollRef}>
+                    {chunks.length > 0 ? (
+                      chunks.map((chunk, idx) => {
+                        const chunkId = `chunk_${idx}`;
+                        const isSelected = selectedChunkId === chunkId;
+                        const isHovered = hoveredChunkId === chunkId;
+                        
+                        return (
+                          <div
+                            key={idx}
+                            id={chunkId}
+                            ref={el => chunkRefs.current[chunkId] = el}
+                            className={`chunk-card ${isSelected ? 'selected' : ''} ${isHovered ? 'hovered' : ''}`}
+                            onClick={() => handleChunkClick(chunkId, chunk.grounding, idx)}
+                            onMouseEnter={() => handleChunkHover(chunkId)}
+                            onMouseLeave={handleChunkUnhover}
+                          >
+                            <div className="chunk-header">
+                              <span className="chunk-page">
+                                {chunk.grounding?.page !== undefined ? `Page ${chunk.grounding.page + 1}` : 'N/A'}
+                              </span>
+                              <span className="chunk-type">{chunk.chunk_type || 'text'}</span>
+                            </div>
+                            <div 
+                              className={`chunk-content ${chunk.chunk_type !== 'table' ? 'truncated' : ''}`}
+                              dangerouslySetInnerHTML={{ __html: chunk.text || 'No content' }}
+                            />
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <p className="empty-state">No chunks available</p>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <ValidationPanel 
+                  docId={selectedDocId}
+                  chunks={chunks}
+                  onSaveSuccess={handleValidationSave}
+                />
+              )}
             </div>
           </div>
         ) : (
